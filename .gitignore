@@ -1,0 +1,5 @@
+.DS_Store
+
+# Personal measurements and notes from this machine. Never published: benchmark
+# output records which networks were used and when.
+local/

@@ -1,0 +1,169 @@
+#!/usr/bin/env bash
+# dnsrace: control the local racing DNS resolver.
+# Installed to /usr/local/bin/dnsrace. Run `dnsrace help` for the command list.
+set -uo pipefail
+
+LABEL=org.adguard.dnsproxy
+BIN=/usr/local/bin/dnsproxy
+CONF=/usr/local/etc/dnsproxy/dnsproxy.yaml
+LOG=/Library/Logs/dnsproxy/dnsproxy.log
+SHARE=/usr/local/share/dnsrace
+REPO="${DNSRACE_REPO:-smk-labs/dnsrace}"
+
+die()  { echo "$*" >&2; exit 1; }
+root() { [[ $EUID -eq 0 ]] || die "Needs sudo: sudo dnsrace $SUB"; }
+
+# Every active network service, one per line. networksetup marks disabled ones
+# with a leading asterisk, so those are dropped.
+services() {
+  networksetup -listallnetworkservices 2>/dev/null | tail -n +2 | grep -v '^\*'
+}
+
+# A name nothing has resolved before, so no cache anywhere can answer it and the
+# timing reflects real recursion rather than a cache hit.
+cold_name() {
+  printf 'z%x%x%x.%s' "$RANDOM" "$RANDOM" "$RANDOM" "${1:-example.com}"
+}
+
+cmd_status() {
+  local pid ans
+  pid="$(pgrep -f "^$BIN" | head -1)"
+  if [[ -n "$pid" ]]; then
+    echo "daemon    running, pid $pid"
+  else
+    echo "daemon    NOT running"
+  fi
+  echo "version   $("$BIN" --version 2>/dev/null || echo 'not installed')"
+  echo "config    $CONF"
+  if [[ -r "$CONF" ]]; then
+    # Only the upstream: block. listen-addrs, bogus-nxdomain and fallback also
+    # hold bare addresses, and counting those would inflate the number.
+    echo "upstreams $(awk '
+      /^upstream:/ {inblock = 1; next}
+      /^[a-z-]+:/  {inblock = 0}
+      inblock && /^[[:space:]]*-[[:space:]]*"?(\[\/[^]]*\/\])?[0-9]/ {n++}
+      END {print n + 0}' "$CONF")"
+  fi
+  if [[ -f "$LOG" ]]; then
+    echo "log       $LOG ($(du -h "$LOG" | cut -f1))"
+  fi
+  if command -v dig >/dev/null; then
+    ans="$(dig +short +time=3 +tries=1 example.com @127.0.0.1 2>/dev/null | head -1)"
+    [[ -n "$ans" ]] && echo "answers   yes (example.com -> $ans)" || echo "answers   NO"
+  fi
+  echo "macOS DNS per network service:"
+  local svc
+  while read -r svc; do
+    echo "  $svc: $(networksetup -getdnsservers "$svc" 2>/dev/null | paste -sd, -)"
+  done < <(services)
+}
+
+cmd_test() {
+  command -v dig >/dev/null || die "dig not installed: brew install bind"
+  local domain="${1:-example.com}" n="${2:-5}" i t name
+  echo "Cold-cache resolution of $domain through 127.0.0.1, $n queries."
+  for ((i = 1; i <= n; i++)); do
+    name="$(cold_name "$domain")"
+    t="$(dig +tries=1 +time=5 +stats @127.0.0.1 "$name" 2>/dev/null \
+         | awk '/Query time:/ {print $4; exit}')"
+    printf '  %2d  %s ms\n' "$i" "${t:-timeout}"
+  done
+  echo
+  echo "Real answer: $(dig +short +time=5 "$domain" @127.0.0.1 2>/dev/null | head -1)"
+}
+
+cmd_logs()   { [[ "${1:-}" == -f ]] && exec tail -f "$LOG"; exec tail -n "${1:-50}" "$LOG"; }
+cmd_config() { root; "${EDITOR:-nano}" "$CONF" && cmd_reload; }
+
+cmd_reload() {
+  root
+  launchctl bootout "system/$LABEL" 2>/dev/null
+  launchctl bootstrap system "/Library/LaunchDaemons/$LABEL.plist" || die "Failed to load daemon."
+  sleep 1
+  cmd_status
+}
+
+cmd_system() {
+  case "${1:-show}" in
+    on)
+      root
+      while read -r svc; do
+        networksetup -setdnsservers "$svc" 127.0.0.1 && echo "  $svc -> 127.0.0.1"
+      done < <(services)
+      dscacheutil -flushcache 2>/dev/null
+      killall -HUP mDNSResponder 2>/dev/null
+      echo "macOS now resolves through the local resolver."
+      ;;
+    off)
+      root
+      while read -r svc; do
+        networksetup -setdnsservers "$svc" empty && echo "  $svc -> back to DHCP"
+      done < <(services)
+      dscacheutil -flushcache 2>/dev/null
+      killall -HUP mDNSResponder 2>/dev/null
+      ;;
+    show)
+      while read -r svc; do
+        echo "  $svc: $(networksetup -getdnsservers "$svc" 2>/dev/null | paste -sd, -)"
+      done < <(services)
+      ;;
+    *) die "Usage: dnsrace system on|off|show" ;;
+  esac
+}
+
+cmd_bench() {
+  local b="$SHARE/bench/benchmark.sh"
+  [[ -x "$b" ]] || die "Benchmark not installed. Expected $b"
+  exec "$b" "$@"
+}
+
+cmd_update() {
+  root
+  echo "==> Reinstalling from $REPO"
+  curl -fsSL "https://raw.githubusercontent.com/$REPO/main/get.sh" | bash
+}
+
+cmd_uninstall() {
+  root
+  local u="$SHARE/uninstall.sh"
+  [[ -x "$u" ]] || die "Expected $u"
+  exec "$u"
+}
+
+cmd_help() {
+  cat <<'EOF'
+dnsrace: a local DNS resolver that races many upstreams and keeps the fastest
+answer. Listens on 127.0.0.1:53.
+
+  dnsrace status               Is it up, does it answer, what does macOS use
+  dnsrace test [domain] [n]    Time n cold-cache lookups through the resolver
+  dnsrace logs [-f | lines]    Read the resolver log
+  dnsrace config               Edit the upstream list, then reload      (sudo)
+  dnsrace reload               Restart the daemon                      (sudo)
+  dnsrace system on|off|show   Point macOS itself at the resolver      (sudo)
+  dnsrace bench [args]         Time every upstream in the config individually
+  dnsrace update               Reinstall the latest version            (sudo)
+  dnsrace uninstall            Remove everything                       (sudo)
+
+Any app with a DNS server field can be pointed at 127.0.0.1 without touching
+the macOS setting at all.
+EOF
+}
+
+SUB="${1:-status}"
+shift || true
+case "$SUB" in
+  status)    cmd_status "$@" ;;
+  test)      cmd_test "$@" ;;
+  logs)      cmd_logs "$@" ;;
+  config)    cmd_config "$@" ;;
+  reload)    cmd_reload "$@" ;;
+  restart)   cmd_reload "$@" ;;
+  system)    cmd_system "$@" ;;
+  bench)     cmd_bench "$@" ;;
+  update)    cmd_update "$@" ;;
+  uninstall) cmd_uninstall "$@" ;;
+  help|-h|--help) cmd_help ;;
+  version|--version) "$BIN" --version ;;
+  *) die "Unknown command: $SUB (try: dnsrace help)" ;;
+esac

@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Caps the resolver log. Parallel racing means every query that any upstream
+  loses or times out on is written as one ERROR line, so the log grows by a
+  couple of megabytes a day on a busy machine and never stops.
+
+  launchd owns that file and holds it open in append mode, so the log cannot be
+  renamed out from under it: newsyslog would rotate the file and launchd would
+  keep writing to the renamed inode, leaving the new file empty forever.
+  Truncating in place is the one operation that works, because an append-mode
+  write always lands at the current end of file, which after a truncate is 0.
+
+  Runs once a day and only truncates past the size cap, so the recent log is
+  always there when you need to read it.
+-->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>org.adguard.dnsproxy.logrotate</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/bin/sh</string>
+		<string>-c</string>
+		<string>f=/Library/Logs/dnsproxy/dnsproxy.log; [ -f "$f" ] &amp;&amp; [ "$(stat -f%z "$f")" -gt 20971520 ] &amp;&amp; : &gt; "$f"; exit 0</string>
+	</array>
+	<key>StartCalendarInterval</key>
+	<dict>
+		<key>Hour</key>
+		<integer>4</integer>
+		<key>Minute</key>
+		<integer>30</integer>
+	</dict>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>LowPriorityIO</key>
+	<true/>
+</dict>
+</plist>

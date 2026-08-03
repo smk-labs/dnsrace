@@ -1,0 +1,144 @@
+# dnsrace: a local racing DNS resolver, listening on 127.0.0.1:53.
+# Installed to /usr/local/etc/dnsproxy/dnsproxy.yaml by install.sh.
+# YAML keys are the long flag names of AdGuard dnsproxy:
+# https://github.com/AdguardTeam/dnsproxy
+#
+# Design, in one paragraph. Every query goes to all upstreams in its group at
+# once and the first valid answer wins, so the resolver that happens to be
+# fastest and reachable on the current network is used automatically. No
+# per-network tuning, and a dead upstream costs nothing: it simply loses the
+# race. Groups are kept separate on purpose, because the resolver that answers
+# fastest is not always the resolver that answers best.
+#
+# Add or remove an upstream: edit the list below, then `sudo dnsrace reload`.
+---
+listen-addrs:
+  - "127.0.0.1"
+listen-ports:
+  - 53
+
+# Race all upstreams in a group, first valid answer wins.
+upstream-mode: parallel
+timeout: '3s'
+
+# We do not validate DNSSEC locally, and asking for the DO bit makes some
+# resolvers return malformed or empty answers. Off, deliberately.
+dnssec: false
+
+# Cache aggressively. cache-optimistic serves a stale entry immediately and
+# refreshes it in the background, which removes the latency spike at expiry.
+# cache-min-ttl floors very short TTLs so hot names are not re-resolved every
+# few seconds.
+cache: true
+cache-optimistic: true
+cache-size: 4194304
+cache-min-ttl: 60
+
+# Some upstreams answer with a private-range placeholder address instead of a
+# real one, or instead of NXDOMAIN. Treat that range as NXDOMAIN so a client
+# fails immediately rather than opening a connection to an unroutable host.
+bogus-nxdomain:
+  - 10.10.34.0/24
+
+upstream:
+  # ---- default group: global anycast resolvers, raced in parallel ----
+  # Cloudflare
+  - 1.1.1.1:53
+  - 1.0.0.1:53
+  # Google
+  - 8.8.8.8:53
+  - 8.8.4.4:53
+  # Quad9
+  - 9.9.9.9:53
+  - 149.112.112.112:53
+  # OpenDNS / Cisco
+  - 208.67.222.222:53
+  - 208.67.220.220:53
+  # AdGuard
+  - 94.140.14.14:53
+  - 94.140.15.15:53
+  # ControlD
+  - 76.76.2.0:53
+  - 76.76.10.0:53
+  # Mullvad
+  - 194.242.2.2:53
+  # NextDNS
+  - 45.90.28.0:53
+  # dns0.eu
+  - 193.110.81.0:53
+  # DNS.SB
+  - 185.222.222.222:53
+  # Level3
+  - 4.2.2.1:53
+  - 4.2.2.2:53
+  # Verisign / Neustar
+  - 64.6.64.6:53
+  - 64.6.65.6:53
+  # CleanBrowsing, security variant
+  - 185.228.168.9:53
+  # Comodo
+  - 8.26.56.26:53
+  # AliDNS
+  - 223.5.5.5:53
+  - 223.6.6.6:53
+  # DNSPod / Tencent
+  - 119.29.29.29:53
+  - 119.28.28.28:53
+  # 114DNS
+  - 114.114.114.114:53
+  # Yandex. Keeps detailed query logs, so it belongs here as one racer among
+  # many, never as a sole upstream.
+  - 77.88.8.8:53
+
+  # ---- suffix-scoped group: [/ir/] ----
+  # A zone whose authoritative nameservers all sit inside one region resolves
+  # better through resolvers that are network-close to those nameservers: the
+  # zone is already hot in their cache and their path to it is short. A global
+  # anycast resolver has to walk the delegation chain from outside the region
+  # on every cold name, which is slower and times out more often.
+  #
+  # These are scoped to this suffix only, and deliberately kept out of the
+  # default group. They are the closest resolvers on this machine's networks,
+  # so in the default group they would win nearly every race, including races
+  # for names the global pool answers better.
+  - "[/ir/]178.22.122.100:53"
+  - "[/ir/]178.22.122.101:53"
+  - "[/ir/]185.51.200.1:53"
+  - "[/ir/]185.51.200.2:53"
+  - "[/ir/]194.225.62.66:53"
+  - "[/ir/]194.225.62.80:53"
+  - "[/ir/]185.55.226.26:53"
+  - "[/ir/]185.55.225.25:53"
+  - "[/ir/]78.157.42.100:53"
+  - "[/ir/]78.157.42.101:53"
+  - "[/ir/]5.202.100.100:53"
+  - "[/ir/]5.202.100.101:53"
+  - "[/ir/]217.218.127.127:53"
+  - "[/ir/]217.218.155.155:53"
+  - "[/ir/]5.160.233.150:53"
+  - "[/ir/]37.202.225.137:53"
+  - "[/ir/]46.209.157.19:53"
+  - "[/ir/]80.191.88.90:53"
+  - "[/ir/]80.210.52.165:53"
+  - "[/ir/]87.10.19.84:53"
+  - "[/ir/]109.125.132.133:53"
+  - "[/ir/]109.230.90.86:53"
+  - "[/ir/]2.188.21.20:53"
+  - "[/ir/]2.188.21.90:53"
+  - "[/ir/]2.188.21.100:53"
+  - "[/ir/]2.188.21.120:53"
+  - "[/ir/]2.188.21.190:53"
+  - "[/ir/]2.188.21.230:53"
+  - "[/ir/]2.188.21.240:53"
+  - "[/ir/]178.22.122.246:53"
+  - "[/ir/]185.11.70.217:53"
+  - "[/ir/]185.192.113.26:53"
+  - "[/ir/]217.170.251.102:53"
+
+# Last resort, used only when every upstream in the matching group failed for
+# a query. These three answered most consistently in testing, and they answer
+# any suffix, not only the scoped one.
+fallback:
+  - 194.225.62.66:53
+  - 178.22.122.100:53
+  - 185.192.113.26:53
