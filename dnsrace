@@ -77,8 +77,22 @@ cmd_config() { root; "${EDITOR:-nano}" "$CONF" && cmd_reload; }
 
 cmd_reload() {
   root
+  local plist="/Library/LaunchDaemons/$LABEL.plist" i
+  [[ -f "$plist" ]] || die "Not installed: $plist is missing."
+
+  # bootout returns when the request is queued, not when the job is gone, and
+  # bootstrapping a label launchd still holds fails with an I/O error. Wait for
+  # it to actually disappear, then load, retrying a few times.
   launchctl bootout "system/$LABEL" 2>/dev/null
-  launchctl bootstrap system "/Library/LaunchDaemons/$LABEL.plist" || die "Failed to load daemon."
+  for ((i = 0; i < 100; i++)); do
+    launchctl print "system/$LABEL" >/dev/null 2>&1 || break
+    sleep 0.1
+  done
+  for ((i = 1; i <= 3; i++)); do
+    launchctl bootstrap system "$plist" 2>/dev/null && break
+    sleep 1
+    (( i == 3 )) && { launchctl bootstrap system "$plist" || die "Failed to load daemon."; }
+  done
   sleep 1
   cmd_status
 }

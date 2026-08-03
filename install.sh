@@ -62,6 +62,36 @@ echo "    ok $ACTUAL"
 
 tar xzf "$TMP/$TARBALL" -C "$TMP"
 
+# Unload before writing anything, and wait for launchd to really let go.
+#
+# launchctl bootout returns as soon as the request is queued, not when the job
+# is gone. Bootstrapping a label that launchd still has registered fails with
+# "Bootstrap failed: 5: Input/output error", and rewriting a plist underneath a
+# loaded job invites the same thing. So: stop, confirm it is gone, then install.
+unload() {
+  local label="$1" i
+  launchctl bootout "system/$label" 2>/dev/null || true
+  for ((i = 0; i < 100; i++)); do
+    launchctl print "system/$label" >/dev/null 2>&1 || return 0
+    sleep 0.1
+  done
+  echo "WARNING: $label is still registered after 10s." >&2
+}
+
+load() {
+  local label="$1" plist="$2" i
+  for ((i = 1; i <= 3; i++)); do
+    launchctl bootstrap system "$plist" 2>/dev/null && return 0
+    sleep 1
+  done
+  # Surface the real error on the last try instead of swallowing it.
+  launchctl bootstrap system "$plist"
+}
+
+echo "==> Stopping any running daemon"
+unload "$LABEL"
+unload "$ROTATE_LABEL"
+
 echo "==> Installing"
 mkdir -p "$ETC" "$LOGDIR"
 install -o root -g wheel -m 755 "$TMP/darwin-$GOARCH/dnsproxy" "$BIN"
@@ -86,10 +116,8 @@ fi
 "$BIN" --version
 
 echo "==> Loading daemons"
-for l in "$LABEL" "$ROTATE_LABEL"; do
-  launchctl bootout "system/$l" 2>/dev/null || true
-  launchctl bootstrap system "$DAEMONS/$l.plist"
-done
+load "$LABEL"        "$DAEMONS/$LABEL.plist"
+load "$ROTATE_LABEL" "$DAEMONS/$ROTATE_LABEL.plist" || true
 sleep 1
 launchctl print "system/$LABEL" | grep -E '^\s+(state|pid) ' || true
 
