@@ -15,6 +15,7 @@ ROTATE_LABEL="$LABEL.logrotate"
 BIN=/usr/local/bin/dnsproxy
 CLI=/usr/local/bin/dnsrace
 ETC=/usr/local/etc/dnsproxy
+SHARE=/usr/local/share/dnsrace
 LOGDIR=/Library/Logs/dnsproxy
 DAEMONS=/Library/LaunchDaemons
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -68,6 +69,20 @@ install -o root -g wheel -m 755 "$SRC/dnsrace"                 "$CLI"
 install -o root -g wheel -m 644 "$SRC/config/dnsproxy.yaml"    "$ETC/dnsproxy.yaml"
 install -o root -g wheel -m 644 "$SRC/config/$LABEL.plist"        "$DAEMONS/$LABEL.plist"
 install -o root -g wheel -m 644 "$SRC/config/$ROTATE_LABEL.plist" "$DAEMONS/$ROTATE_LABEL.plist"
+
+# Keep a root-owned copy of the project itself. `dnsrace bench` and
+# `dnsrace uninstall` read it, so running this straight from a clone has to
+# leave the same layout behind as the one-command installer does.
+if [[ "$SRC" != "$SHARE" ]]; then
+  rm -rf "$SHARE"
+  mkdir -p "$SHARE"
+  # No .git, no local notes: only what the installed copy needs to work.
+  tar -C "$SRC" --exclude .git --exclude local -cf - . | tar -C "$SHARE" -xf -
+  chown -R root:wheel "$SHARE"
+  chmod 755 "$SHARE/install.sh" "$SHARE/uninstall.sh" "$SHARE/get.sh" \
+            "$SHARE/dnsrace" "$SHARE/bench/benchmark.sh"
+fi
+
 "$BIN" --version
 
 echo "==> Loading daemons"
